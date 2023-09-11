@@ -24,8 +24,8 @@ datasets:
   - path: Glavin001/startup-interviews
     type: alpaca
 dataset_prepared_path: last_run_prepared
-# val_set_size: 0.01
-val_set_size: 0.02
+val_set_size: 0.01
+# val_set_size: 0.02
 # val_set_size: 0.05
 # val_set_size: 0.001
 # val_set_size: 0.1
@@ -65,7 +65,8 @@ micro_batch_size: 16
 # num_epochs: 0.01
 # num_epochs: 1
 # num_epochs: 5
-num_epochs: 10
+# num_epochs: 10
+num_epochs: 0.01
 optimizer: adamw_bnb_8bit
 lr_scheduler: cosine
 learning_rate: 0.0002
