@@ -34,6 +34,7 @@ from axolotl.utils.callbacks import (
 )
 from axolotl.utils.collators import DataCollatorForSeq2Seq
 from axolotl.utils.dataloader import MultipackDistributedDataloader
+from axolotl.utils.distributed import is_main_process, zero_first
 from axolotl.utils.schedulers import get_cosine_schedule_with_quadratic_warmup
 
 LOG = logging.getLogger("axolotl")
@@ -376,14 +377,17 @@ def disable_datasets_caching():
 
 def process_datasets_for_packing(cfg, train_dataset, eval_dataset):
     drop_long = partial(drop_long_seq, sequence_len=cfg.sequence_len)
-    train_dataset = train_dataset.filter(drop_long, num_proc=os.cpu_count())
-    if eval_dataset:
-        eval_dataset = eval_dataset.filter(drop_long, num_proc=os.cpu_count())
-
-    if cfg.sample_packing:
-        train_dataset = train_dataset.map(add_position_ids, num_proc=os.cpu_count())
+    with zero_first(is_main_process()):
+        train_dataset = train_dataset.filter(drop_long, num_proc=os.cpu_count())
         if eval_dataset:
-            eval_dataset = eval_dataset.map(add_position_ids, num_proc=os.cpu_count())
+            eval_dataset = eval_dataset.filter(drop_long, num_proc=os.cpu_count())
+
+        if cfg.sample_packing:
+            train_dataset = train_dataset.map(add_position_ids, num_proc=os.cpu_count())
+            if eval_dataset:
+                eval_dataset = eval_dataset.map(
+                    add_position_ids, num_proc=os.cpu_count()
+                )
     return train_dataset, eval_dataset
 
 
@@ -515,23 +519,7 @@ def setup_trainer(cfg, train_dataset, eval_dataset, model, tokenizer, total_num_
         training_arguments_kwargs["seed"] = cfg.seed
 
     if cfg.gradient_checkpointing:
-        if cfg.gptq:
-            from alpaca_lora_4bit.gradient_checkpointing import (
-                apply_gradient_checkpointing,
-            )
-
-            gradient_checkpointing_ratio = (
-                cfg.gradient_checkpointing_ratio
-                if cfg.gradient_checkpointing_ratio
-                else 1.0
-            )
-            apply_gradient_checkpointing(
-                model, checkpoint_ratio=gradient_checkpointing_ratio
-            )
-        else:
-            training_arguments_kwargs[
-                "gradient_checkpointing"
-            ] = cfg.gradient_checkpointing
+        training_arguments_kwargs["gradient_checkpointing"] = cfg.gradient_checkpointing
     if cfg.fsdp:
         training_arguments_kwargs["fsdp"] = cfg.fsdp
         if cfg.fsdp_config:
@@ -589,6 +577,10 @@ def setup_trainer(cfg, train_dataset, eval_dataset, model, tokenizer, total_num_
         training_arguments_kwargs["do_bench_eval"] = cfg.do_bench_eval
         if cfg.bench_dataset:
             training_arguments_kwargs["bench_dataset"] = cfg.bench_dataset
+    if cfg.metric_for_best_model:
+        training_arguments_kwargs["metric_for_best_model"] = cfg.metric_for_best_model
+    if cfg.greater_is_better:
+        training_arguments_kwargs["greater_is_better"] = cfg.greater_is_better
 
     # DDP Config
     if cfg.ddp_timeout:
@@ -614,11 +606,10 @@ def setup_trainer(cfg, train_dataset, eval_dataset, model, tokenizer, total_num_
         output_dir=cfg.output_dir,
         save_total_limit=cfg.save_total_limit if cfg.save_total_limit else 4,
         load_best_model_at_end=(
-            cfg.load_best_model_at_end is not False
+            (cfg.load_best_model_at_end is not False or cfg.early_stopping_patience)
             and cfg.val_set_size > 0
             and cfg.save_steps
             and cfg.save_steps % cfg.eval_steps == 0
-            and cfg.load_in_8bit is not True
         )
         or False,
         ddp_find_unused_parameters=False if cfg.ddp else None,
@@ -649,13 +640,6 @@ def setup_trainer(cfg, train_dataset, eval_dataset, model, tokenizer, total_num_
 
     if cfg.relora_steps:
         callbacks.append(ReLoRACallback(cfg))
-
-    # TODO on_save callback to sync checkpoints to GCP/AWS in background
-    if cfg.early_stopping_patience:
-        early_stop_cb = EarlyStoppingCallback(
-            cfg.early_stopping_patience,
-        )
-        callbacks.append(early_stop_cb)
 
     if cfg.local_rank == 0 and cfg.adapter in [
         "lora",
@@ -726,5 +710,12 @@ def setup_trainer(cfg, train_dataset, eval_dataset, model, tokenizer, total_num_
 
     if cfg.do_bench_eval:
         trainer.add_callback(bench_eval_callback_factory(trainer, tokenizer))
+
+    # TODO on_save callback to sync checkpoints to GCP/AWS in background
+    if cfg.early_stopping_patience:
+        early_stop_cb = EarlyStoppingCallback(
+            cfg.early_stopping_patience,
+        )
+        trainer.add_callback(early_stop_cb)
 
     return trainer

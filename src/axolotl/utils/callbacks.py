@@ -28,6 +28,7 @@ import wandb
 from axolotl.utils.bench import log_gpu_memory_usage
 from axolotl.utils.distributed import (
     barrier,
+    broadcast_dict,
     gather_scalar_from_all_ranks,
     get_world_size,
     is_distributed,
@@ -274,6 +275,7 @@ def bench_eval_callback_factory(trainer, tokenizer):
                 lambda: len(data_loader), get_world_size()
             )
 
+            results = {}
             if is_distributed() and not is_main_process():
                 dist.gather_object(local_bench_names, dst=0)
             else:
@@ -318,6 +320,10 @@ def bench_eval_callback_factory(trainer, tokenizer):
                     references=bench_refs, predictions=bench_preds
                 )["accuracy"]
                 trainer.log(results)
+
+            results = broadcast_dict(results)
+            for key, val in results.items():
+                metrics[key] = val
 
     return BenchEvalCallback
 

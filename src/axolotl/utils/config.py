@@ -102,6 +102,11 @@ def validate_config(cfg):
             )
         )
 
+    if cfg.sample_packing and not cfg.pad_to_sequence_len:
+        LOG.warning(
+            "`pad_to_sequence_len: true` is recommended when using sample_packing"
+        )
+
     if cfg.gradient_accumulation_steps and cfg.batch_size:
         raise ValueError(
             "please set only one of gradient_accumulation_steps or batch_size"
@@ -113,9 +118,7 @@ def validate_config(cfg):
             "To calculate the equivalent gradient_accumulation_steps, divide batch_size / micro_batch_size / number of gpus.",
         )
     if cfg.load_4bit:
-        raise ValueError(
-            "cfg.load_4bit parameter has been deprecated and replaced by cfg.gptq"
-        )
+        raise ValueError("cfg.load_4bit parameter has been deprecated")
 
     if cfg.adapter == "qlora":
         if cfg.merge_lora:
@@ -222,6 +225,15 @@ def validate_config(cfg):
             "sample_packing not compatible with xformers_attention. Use flash_attention"
         )
 
+    if cfg.early_stopping_patience:
+        if not cfg.save_steps or not cfg.eval_steps:
+            raise ValueError(
+                "`early_stopping_patience` requires save_steps and eval_steps to be set. eval_steps should evenly divide save_steps."
+            )
+        if cfg.save_steps % cfg.eval_steps != 0:
+            raise ValueError(
+                "`early_stopping_patience` requires that eval_steps should evenly divide save_steps."
+            )
     # TODO
     # MPT 7b
     # https://github.com/facebookresearch/bitsandbytes/issues/25
